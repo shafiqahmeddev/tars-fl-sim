@@ -38,8 +38,26 @@ class Simulation:
         val_size = int(0.2 * len(self.test_dataset))
         test_size = len(self.test_dataset) - val_size
         val_set, self.test_set = random_split(self.test_dataset, [val_size, test_size])
-        self.val_loader = DataLoader(val_set, batch_size=64)
-        self.test_loader = DataLoader(self.test_set, batch_size=64)
+        
+        # GPU-optimized data loaders
+        num_workers = self.config.get('num_workers', 0)
+        pin_memory = self.config.get('pin_memory', False)
+        prefetch_factor = self.config.get('prefetch_factor', 2)
+        
+        self.val_loader = DataLoader(
+            val_set, 
+            batch_size=self.config.get('batch_size', 64),
+            num_workers=num_workers,
+            pin_memory=pin_memory and torch.cuda.is_available(),
+            prefetch_factor=prefetch_factor if num_workers > 0 else 2
+        )
+        self.test_loader = DataLoader(
+            self.test_set, 
+            batch_size=self.config.get('batch_size', 64),
+            num_workers=num_workers,
+            pin_memory=pin_memory and torch.cuda.is_available(),
+            prefetch_factor=prefetch_factor if num_workers > 0 else 2
+        )
 
         # Create model
         self.global_model = MNIST_CNN() if self.config['dataset'] == 'mnist' else CIFAR10_CNN()
@@ -63,7 +81,15 @@ class Simulation:
                 elif self.config['attack_type'] == 'gaussian':
                     attack = attacks.GaussianAttack(std_dev=self.config.get('attack_std_dev', 1.5))
 
-            client_loader = DataLoader(client_subsets[i], batch_size=batch_size, shuffle=True)
+            # GPU-optimized client data loaders
+            client_loader = DataLoader(
+                client_subsets[i], 
+                batch_size=batch_size, 
+                shuffle=True,
+                num_workers=num_workers,
+                pin_memory=pin_memory and torch.cuda.is_available(),
+                prefetch_factor=prefetch_factor if num_workers > 0 else 2
+            )
             client_model = MNIST_CNN() if self.config['dataset'] == 'mnist' else CIFAR10_CNN()
             self.clients.append(Client(i, client_model, client_loader, self.device, is_byzantine, attack, self.config))
 
@@ -171,10 +197,23 @@ class Simulation:
         
         # Train the model
         print("🏋️ Training federated learning model...")
+        
+        # GPU memory monitoring
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print(f"💾 Initial GPU Memory: {torch.cuda.memory_allocated()/1024**3:.2f}GB / {torch.cuda.get_device_properties(0).total_memory/1024**3:.1f}GB")
+        
         last_accuracy, last_loss = self.server.evaluate_model(self.server.get_global_model_state())
         
         for t in range(self.config['num_rounds']):
             print(f"\n--- Round {t+1}/{self.config['num_rounds']} ---")
+            
+            # Clear GPU cache periodically
+            if torch.cuda.is_available() and t % self.config.get('empty_cache_every', 5) == 0:
+                torch.cuda.empty_cache()
+                gpu_memory = torch.cuda.memory_allocated() / 1024**3
+                max_memory = torch.cuda.max_memory_allocated() / 1024**3
+                print(f"🔧 GPU Memory: {gpu_memory:.2f}GB (Peak: {max_memory:.2f}GB)")
             
             # Client training
             client_updates = []
