@@ -1,0 +1,55 @@
+[project]
+name = "tars-fl-sim"
+version = "0.1.0"
+description = "TARS: Trust-Aware Reinforcement Selection for Robust Federated Learning"
+readme = "README.md"
+requires-python = ">=3.8.1"
+dependencies = [
+    "torch>=2.0.0,<2.7.0",
+    "torchvision>=0.15.0,<0.20.0",
+    "numpy>=1.24.0,<2.0.0",
+    "pandas>=2.0.0,<3.0.0",
+    "matplotlib>=3.7.0,<4.0.0",
+]
+authors = [
+    {name = "Shafiq Ahmed", email = "s.ahmed@essex.ac.uk"}
+]
+keywords = ["federated-learning", "byzantine-fault-tolerance", "reinforcement-learning", "machine-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+    "jupyter>=1.0.0",
+]
+
+[project.urls]
+Repository = "https://github.com/shafiqahmeddev/tars-fl-sim"
+Documentation = "https://github.com/shafiqahmeddev/tars-fl-sim#readme"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

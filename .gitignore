@@ -1,0 +1,53 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+venv/
+env/
+
+# TARS-specific files
+data/
+*.csv
+*.json
+simulation_results.*
+checkpoints/
+models/
+*.pth
+*.pkl
+
+# Large dataset files
+*.tar.gz
+*.zip
+*.gz
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+logs/
+*.log
+
+# Model artifacts
+wandb/
+mlruns/
+.neptune/
