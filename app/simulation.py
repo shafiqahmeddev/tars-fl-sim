@@ -47,9 +47,11 @@ class Simulation:
         # Create server
         self.server = Server(self.global_model, self.val_loader, self.device)
 
-        # Create clients
+        # Create clients with enhanced configuration
         client_subsets, _ = partition_data(self.train_dataset, self.config['num_clients'], self.config['is_iid'])
         num_byzantine = int(self.config['num_clients'] * self.config['byzantine_pct'])
+        
+        batch_size = self.config.get('batch_size', 32)
         
         self.clients = []
         for i in range(self.config['num_clients']):
@@ -61,9 +63,9 @@ class Simulation:
                 elif self.config['attack_type'] == 'gaussian':
                     attack = attacks.GaussianAttack(std_dev=self.config.get('attack_std_dev', 1.5))
 
-            client_loader = DataLoader(client_subsets[i], batch_size=32, shuffle=True)
+            client_loader = DataLoader(client_subsets[i], batch_size=batch_size, shuffle=True)
             client_model = MNIST_CNN() if self.config['dataset'] == 'mnist' else CIFAR10_CNN()
-            self.clients.append(Client(i, client_model, client_loader, self.device, is_byzantine, attack))
+            self.clients.append(Client(i, client_model, client_loader, self.device, is_byzantine, attack, self.config))
 
         # Create TARS agent
         self.aggregation_rules = {
@@ -75,6 +77,12 @@ class Simulation:
         }
         self.agent = TARSAgent(self.aggregation_rules, len(self.aggregation_rules), self.config)
         self.history = []
+        
+        # Performance monitoring
+        self.best_accuracy = 0.0
+        self.best_model_state = None
+        self.patience_counter = 0
+        self.early_stop = False
         
         # Load pre-trained model if available
         self._load_pretrained_model()
@@ -197,21 +205,73 @@ class Simulation:
 
             # Evaluation and Learning
             accuracy, loss = self.server.evaluate_model(new_global_state)
-            print(f"Round {t+1} Accuracy: {accuracy:.2f}%, Loss: {loss:.4f}")
+            print(f"Round {t+1} Accuracy: {accuracy:.2f}%, Loss: {loss:.4f}, Avg Trust: {avg_trust:.3f}")
+            
+            # Performance monitoring and early stopping
+            if accuracy > self.best_accuracy:
+                self.best_accuracy = accuracy
+                self.best_model_state = new_global_state.copy()
+                self.patience_counter = 0
+                print(f"🎯 New best accuracy: {accuracy:.2f}%")
+            else:
+                self.patience_counter += 1
+            
+            # Early stopping check
+            if self.config.get('early_stopping', False):
+                patience = self.config.get('patience', 10)
+                if self.patience_counter >= patience:
+                    print(f"🛑 Early stopping triggered after {patience} rounds without improvement")
+                    self.early_stop = True
             
             reward = self.agent.calculate_reward(accuracy, loss, avg_trust)
             next_state = self.agent.get_state(accuracy, loss, avg_trust)
             self.agent.update_q_table(state, action, reward, next_state)
             
             last_accuracy, last_loss = accuracy, loss
-            self.history.append({'round': t+1, 'accuracy': accuracy, 'loss': loss, 'chosen_rule': chosen_rule.__name__})
+            
+            # Enhanced history tracking
+            round_stats = {
+                'round': t+1, 
+                'accuracy': accuracy, 
+                'loss': loss, 
+                'avg_trust': avg_trust,
+                'chosen_rule': chosen_rule.__name__,
+                'client_losses': [up.get('_client_stats', {}).get('avg_loss', 0) for up in client_updates],
+                'trust_scores': smoothed_trusts.copy(),
+                'epsilon': self.agent.epsilon
+            }
+            self.history.append(round_stats)
+            
+            # Break if early stopping triggered
+            if self.early_stop:
+                break
             
         print("\n--- Final Evaluation on Test Set ---")
-        final_acc, final_loss = self.server.evaluate_model(self.server.get_global_model_state())
+        
+        # Use best model if available and early stopping was used
+        if self.best_model_state is not None and self.config.get('early_stopping', False):
+            print("🏆 Using best model from training...")
+            self.server.set_global_model_state(self.best_model_state)
+            final_acc, final_loss = self.server.evaluate_model(self.best_model_state)
+        else:
+            final_acc, final_loss = self.server.evaluate_model(self.server.get_global_model_state())
+        
         print(f"Final Test Accuracy: {final_acc:.2f}%, Final Test Loss: {final_loss:.4f}")
+        print(f"Best Accuracy Achieved: {self.best_accuracy:.2f}%")
+        
+        # Performance summary
+        if final_acc >= 97.0:
+            print("🎉 TARGET ACHIEVED: 97%+ accuracy reached!")
+        elif final_acc >= 95.0:
+            print("✅ EXCELLENT: 95%+ accuracy achieved!")
+        elif final_acc >= 90.0:
+            print("👍 GOOD: 90%+ accuracy achieved")
+        else:
+            print("⚠️  Accuracy below 90% - may need further tuning")
         
         # Save the trained model if configured to do so
         if self.config.get('save_model', True):
-            self.save_trained_model(final_acc, final_loss, self.config['num_rounds'])
+            actual_rounds = len(self.history)
+            self.save_trained_model(final_acc, final_loss, actual_rounds)
         
         return self.history

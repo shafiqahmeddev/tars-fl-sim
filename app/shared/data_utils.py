@@ -11,23 +11,55 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 DATA_ROOT = './data'
 
-def load_datasets() -> Tuple[Dataset, Dataset, Dataset, Dataset]:
-    """Downloads and loads the MNIST and CIFAR-10 datasets."""
+def load_datasets(augment=True) -> Tuple[Dataset, Dataset, Dataset, Dataset]:
+    """Downloads and loads the MNIST and CIFAR-10 datasets with optional augmentation."""
     os.makedirs(DATA_ROOT, exist_ok=True)
 
-    mnist_transform = transforms.Compose([
+    # MNIST transforms with augmentation for training
+    if augment:
+        mnist_train_transform = transforms.Compose([
+            transforms.RandomRotation(10),
+            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
+        ])
+    else:
+        mnist_train_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
+        ])
+    
+    mnist_test_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
     ])
-    cifar_transform = transforms.Compose([
+
+    # CIFAR-10 transforms with strong augmentation for training
+    if augment:
+        cifar_train_transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomRotation(15),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        ])
+    else:
+        cifar_train_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        ])
+    
+    cifar_test_transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
     ])
 
-    train_mnist = datasets.MNIST(DATA_ROOT, train=True, download=True, transform=mnist_transform)
-    test_mnist = datasets.MNIST(DATA_ROOT, train=False, download=True, transform=mnist_transform)
-    train_cifar = datasets.CIFAR10(DATA_ROOT, train=True, download=True, transform=cifar_transform)
-    test_cifar = datasets.CIFAR10(DATA_ROOT, train=False, download=True, transform=cifar_transform)
+    # Load datasets with appropriate transforms
+    train_mnist = datasets.MNIST(DATA_ROOT, train=True, download=True, transform=mnist_train_transform)
+    test_mnist = datasets.MNIST(DATA_ROOT, train=False, download=True, transform=mnist_test_transform)
+    train_cifar = datasets.CIFAR10(DATA_ROOT, train=True, download=True, transform=cifar_train_transform)
+    test_cifar = datasets.CIFAR10(DATA_ROOT, train=False, download=True, transform=cifar_test_transform)
 
     return train_mnist, test_mnist, train_cifar, test_cifar
 

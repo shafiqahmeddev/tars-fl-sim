@@ -27,24 +27,55 @@ class TARSAgent(IAgent):
         self.trust_memory = defaultdict(lambda: 1.0)
 
     def calculate_raw_trust_score(self, client_update_state: Dict[str, Any], global_model_state: Dict[str, Any], server: IServer) -> float:
-        """Calculates the raw trust score based on the paper's criteria."""
-        _, client_loss = server.evaluate_model(client_update_state)
+        """Enhanced trust score calculation with improved metrics."""
+        # Extract client stats if available
+        client_stats = client_update_state.get('_client_stats', {})
+        
+        # Remove stats from model state for evaluation
+        clean_client_state = {k: v for k, v in client_update_state.items() if k != '_client_stats'}
+        
+        # Calculate model performance metrics
+        _, client_loss = server.evaluate_model(clean_client_state)
         _, global_loss = server.evaluate_model(global_model_state)
         loss_divergence = client_loss - global_loss
 
-        client_vec = torch.cat([p.view(-1) for p in client_update_state.values()])
+        # Calculate parameter similarity
+        client_vec = torch.cat([p.view(-1) for p in clean_client_state.values()])
         global_vec = torch.cat([p.view(-1) for p in global_model_state.values()])
         cosine_sim = F.cosine_similarity(client_vec, global_vec, dim=0).item()
 
+        # Calculate gradient/update magnitude
         grad_vec = client_vec - global_vec
         grad_norm = torch.norm(grad_vec).item()
+        
+        # Normalize gradient norm by model size for better scaling
+        model_size = torch.norm(global_vec).item()
+        normalized_grad_norm = grad_norm / (model_size + 1e-8)
 
+        # Enhanced trust score calculation
+        similarity_score = max(0, cosine_sim)  # Clamp to [0, 1]
+        loss_score = max(0, 1 - abs(loss_divergence) / (abs(global_loss) + 1e-8))  # Relative loss difference
+        norm_score = max(0, 1 - normalized_grad_norm / self.trust_params['norm_threshold'])  # Normalized gradient penalty
+        
+        # Weighted combination
         score = (
-            self.trust_params['w_sim'] * cosine_sim -
-            self.trust_params['w_loss'] * max(0, loss_divergence) -
-            self.trust_params['w_norm'] * (1 if grad_norm > self.trust_params['norm_threshold'] else 0)
+            self.trust_params['w_sim'] * similarity_score +
+            self.trust_params['w_loss'] * loss_score +
+            self.trust_params['w_norm'] * norm_score
         )
-        normalized_score = (np.tanh(score) + 1) / 2
+        
+        # Additional penalty for extreme updates
+        if normalized_grad_norm > self.trust_params['norm_threshold'] * 2:
+            score *= 0.5  # Heavy penalty for very large updates
+            
+        # Use client training loss if available
+        if 'avg_loss' in client_stats:
+            client_training_loss = client_stats['avg_loss']
+            if client_training_loss > global_loss * 3:  # Unusually high training loss
+                score *= 0.8
+        
+        # Ensure score is in [0, 1] range
+        normalized_score = max(0, min(1, score))
         return normalized_score
 
     def update_and_get_smoothed_trust(self, client_id: int, raw_trust_score: float) -> float:

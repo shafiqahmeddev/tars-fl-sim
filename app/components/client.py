@@ -7,33 +7,96 @@ from typing import Dict, Any
 from app.shared.interfaces import IClient, IAttack
 
 class Client(IClient):
-    """Emulates a Federated Learning client device."""
-    def __init__(self, client_id: int, model: nn.Module, data_loader: DataLoader, device: str, is_byzantine: bool = False, attack: IAttack = None):
+    """Enhanced Federated Learning client with advanced training techniques."""
+    def __init__(self, client_id: int, model: nn.Module, data_loader: DataLoader, device: str, 
+                 is_byzantine: bool = False, attack: IAttack = None, config: Dict[str, Any] = None):
         self.client_id = client_id
         self.model = model.to(device)
         self.data_loader = data_loader
         self.device = device
         self.is_byzantine = is_byzantine
         self.attack = attack
+        self.config = config or {}
 
-    def train(self, global_model_state: Dict[str, Any], local_epochs: int = 1, **kwargs) -> Dict[str, Any]:
-        """Performs local training and returns the new model state."""
+    def train(self, global_model_state: Dict[str, Any], local_epochs: int = None, **kwargs) -> Dict[str, Any]:
+        """Performs enhanced local training with improved optimization."""
         self.model.load_state_dict(global_model_state)
         self.model.train()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.01)
-
+        
+        # Get training parameters from config
+        if local_epochs is None:
+            local_epochs = self.config.get('local_epochs', 1)
+        
+        lr = self.config.get('client_lr', 0.001)
+        weight_decay = self.config.get('weight_decay', 1e-4)
+        optimizer_type = self.config.get('client_optimizer', 'adam')
+        
+        # Create optimizer
+        if optimizer_type.lower() == 'adam':
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+        elif optimizer_type.lower() == 'sgd':
+            optimizer = torch.optim.SGD(self.model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay)
+        else:
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+        
+        # Learning rate scheduler
+        if self.config.get('use_scheduler', False):
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=local_epochs)
+        
+        # Training loop with enhanced features
+        total_loss = 0.0
+        num_batches = 0
+        
         for epoch in range(local_epochs):
-            for data, target in self.data_loader:
+            epoch_loss = 0.0
+            for batch_idx, (data, target) in enumerate(self.data_loader):
                 data, target = data.to(self.device), target.to(self.device)
+                
                 optimizer.zero_grad()
                 output = self.model(data)
                 loss = F.nll_loss(output, target)
+                
+                # Add L2 regularization if not using weight_decay
+                if self.config.get('l2_reg', 0.0) > 0:
+                    l2_reg = torch.tensor(0.).to(self.device)
+                    for param in self.model.parameters():
+                        l2_reg += torch.norm(param)
+                    loss += self.config['l2_reg'] * l2_reg
+                
                 loss.backward()
+                
+                # Gradient clipping
+                if self.config.get('grad_clip', 0.0) > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config['grad_clip'])
+                
                 optimizer.step()
-
+                
+                epoch_loss += loss.item()
+                total_loss += loss.item()
+                num_batches += 1
+            
+            # Update learning rate
+            if self.config.get('use_scheduler', False):
+                scheduler.step()
+        
+        # Calculate average loss for this client
+        avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
+        
         update = self.model.state_dict()
+        
+        # Store training statistics
+        update['_client_stats'] = {
+            'client_id': self.client_id,
+            'avg_loss': avg_loss,
+            'num_samples': len(self.data_loader.dataset),
+            'local_epochs': local_epochs
+        }
 
         if self.is_byzantine and self.attack:
-            return self.attack.apply(update, **kwargs)
+            # Apply attack but preserve stats
+            stats = update.pop('_client_stats')
+            attacked_update = self.attack.apply(update, **kwargs)
+            attacked_update['_client_stats'] = stats
+            return attacked_update
         
         return update
