@@ -31,6 +31,23 @@ class Client(IClient):
         
         # Validate device configuration
         self._validate_device_setup()
+        
+    def get_device_info(self):
+        """Get device information for this client."""
+        if self.device.startswith('cuda'):
+            gpu_id = int(self.device.split(':')[1]) if ':' in self.device else 0
+            return {
+                'device': self.device,
+                'gpu_id': gpu_id,
+                'is_cuda': True,
+                'memory_allocated': torch.cuda.memory_allocated(gpu_id) / 1024**3 if torch.cuda.is_available() else 0,
+                'memory_total': torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3 if torch.cuda.is_available() else 0
+            }
+        else:
+            return {
+                'device': self.device,
+                'is_cuda': False
+            }
 
     def _validate_device_setup(self):
         """Validate device configuration and model placement."""
@@ -44,7 +61,9 @@ class Client(IClient):
                 print(f"Info: Moving model from {model_device} to {expected_device}")
                 self.model = self.model.to(self.device)
             else:
-                print(f"✅ Client {self.client_id} model correctly placed on {model_device}")
+                # Only print for first few clients to reduce log spam in multi-GPU setup
+                if self.client_id < 3 or self.client_id % 10 == 0:
+                    print(f"✅ Client {self.client_id} model correctly placed on {model_device}")
         except Exception as e:
             print(f"Device validation failed for client {self.client_id}: {e}")
 

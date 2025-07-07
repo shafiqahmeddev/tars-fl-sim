@@ -89,34 +89,84 @@ class Simulation:
         # Create server
         self.server = Server(self.global_model, self.val_loader, self.device)
 
-        # Create clients with enhanced configuration
+        # Create clients with enhanced configuration and multi-GPU support
         client_subsets, _ = partition_data(self.train_dataset, self.config['num_clients'], self.config['is_iid'])
         num_byzantine = int(self.config['num_clients'] * self.config['byzantine_pct'])
         
         batch_size = self.config.get('batch_size', 32)
         
-        self.clients = []
-        for i in range(self.config['num_clients']):
-            is_byzantine = i < num_byzantine
-            attack = None
-            if is_byzantine:
-                if self.config['attack_type'] == 'sign_flipping':
-                    attack = attacks.SignFlippingAttack()
-                elif self.config['attack_type'] == 'gaussian':
-                    attack = attacks.GaussianAttack(std_dev=self.config.get('attack_std_dev', 1.5))
+        # Multi-GPU setup
+        is_multi_gpu = self.config.get('multi_gpu', False)
+        gpu_count = self.config.get('gpu_count', 1)
+        
+        if is_multi_gpu and gpu_count >= 2:
+            print(f"🎮 Setting up multi-GPU training with {gpu_count} GPUs")
+            print(f"📊 Distributing {self.config['num_clients']} clients across GPUs")
+            
+            # Split clients between GPUs
+            clients_per_gpu = self.config['num_clients'] // gpu_count
+            self.clients = []
+            self.gpu_client_groups = {}  # Track which clients are on which GPU
+            
+            for i in range(self.config['num_clients']):
+                # Determine which GPU this client should use
+                gpu_id = min(i // clients_per_gpu, gpu_count - 1)  # Ensure last GPU gets remaining clients
+                client_device = f"cuda:{gpu_id}"
+                
+                # Track client groups
+                if gpu_id not in self.gpu_client_groups:
+                    self.gpu_client_groups[gpu_id] = []
+                self.gpu_client_groups[gpu_id].append(i)
+                
+                is_byzantine = i < num_byzantine
+                attack = None
+                if is_byzantine:
+                    if self.config['attack_type'] == 'sign_flipping':
+                        attack = attacks.SignFlippingAttack()
+                    elif self.config['attack_type'] == 'gaussian':
+                        attack = attacks.GaussianAttack(std_dev=self.config.get('attack_std_dev', 1.5))
 
-            # GPU-optimized client data loaders
-            client_loader = DataLoader(
-                client_subsets[i], 
-                batch_size=batch_size, 
-                shuffle=True,
-                num_workers=num_workers,
-                pin_memory=pin_memory and torch.cuda.is_available(),
-                prefetch_factor=prefetch_factor if num_workers > 0 else 2
-            )
-            client_model = MNIST_CNN() if self.config['dataset'] == 'mnist' else CIFAR10_CNN()
-            client_model = client_model.to(self.device)  # Ensure client model is on correct device
-            self.clients.append(Client(i, client_model, client_loader, self.device, is_byzantine, attack, self.config))
+                # GPU-optimized client data loaders
+                client_loader = DataLoader(
+                    client_subsets[i], 
+                    batch_size=batch_size, 
+                    shuffle=True,
+                    num_workers=num_workers,
+                    pin_memory=pin_memory and torch.cuda.is_available(),
+                    prefetch_factor=prefetch_factor if num_workers > 0 else 2
+                )
+                client_model = MNIST_CNN() if self.config['dataset'] == 'mnist' else CIFAR10_CNN()
+                client_model = client_model.to(client_device)  # Assign to specific GPU
+                
+                self.clients.append(Client(i, client_model, client_loader, client_device, is_byzantine, attack, self.config))
+            
+            print(f"✅ Multi-GPU setup complete:")
+            for gpu_id, client_ids in self.gpu_client_groups.items():
+                print(f"   GPU {gpu_id}: {len(client_ids)} clients (IDs: {client_ids[:5]}{'...' if len(client_ids) > 5 else ''})")
+        else:
+            # Single GPU setup (original behavior)
+            self.clients = []
+            for i in range(self.config['num_clients']):
+                is_byzantine = i < num_byzantine
+                attack = None
+                if is_byzantine:
+                    if self.config['attack_type'] == 'sign_flipping':
+                        attack = attacks.SignFlippingAttack()
+                    elif self.config['attack_type'] == 'gaussian':
+                        attack = attacks.GaussianAttack(std_dev=self.config.get('attack_std_dev', 1.5))
+
+                # GPU-optimized client data loaders
+                client_loader = DataLoader(
+                    client_subsets[i], 
+                    batch_size=batch_size, 
+                    shuffle=True,
+                    num_workers=num_workers,
+                    pin_memory=pin_memory and torch.cuda.is_available(),
+                    prefetch_factor=prefetch_factor if num_workers > 0 else 2
+                )
+                client_model = MNIST_CNN() if self.config['dataset'] == 'mnist' else CIFAR10_CNN()
+                client_model = client_model.to(self.device)  # Ensure client model is on correct device
+                self.clients.append(Client(i, client_model, client_loader, self.device, is_byzantine, attack, self.config))
 
         # Create TARS agent
         self.aggregation_rules = {
@@ -223,41 +273,117 @@ class Simulation:
         # Train the model
         print("🏋️ Training federated learning model...")
         
-        # GPU memory monitoring
+        # GPU memory monitoring (multi-GPU aware)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            print(f"💾 Initial GPU Memory: {torch.cuda.memory_allocated()/1024**3:.2f}GB / {torch.cuda.get_device_properties(0).total_memory/1024**3:.1f}GB")
+            gpu_count = torch.cuda.device_count()
+            if gpu_count > 1:
+                print(f"💾 Initial Multi-GPU Memory Status:")
+                for gpu_id in range(gpu_count):
+                    memory_allocated = torch.cuda.memory_allocated(gpu_id) / 1024**3
+                    total_memory = torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3
+                    print(f"   GPU {gpu_id}: {memory_allocated:.2f}GB / {total_memory:.1f}GB")
+            else:
+                print(f"💾 Initial GPU Memory: {torch.cuda.memory_allocated()/1024**3:.2f}GB / {torch.cuda.get_device_properties(0).total_memory/1024**3:.1f}GB")
         
         last_accuracy, last_loss = self.server.evaluate_model(self.server.get_global_model_state())
         
         for t in range(self.config['num_rounds']):
             print(f"\n--- Round {t+1}/{self.config['num_rounds']} ---")
             
-            # Clear GPU cache periodically
+            # Clear GPU cache periodically (multi-GPU aware)
             if torch.cuda.is_available() and t % self.config.get('empty_cache_every', 5) == 0:
                 torch.cuda.empty_cache()
-                gpu_memory = torch.cuda.memory_allocated() / 1024**3
-                max_memory = torch.cuda.max_memory_allocated() / 1024**3
-                print(f"🔧 GPU Memory: {gpu_memory:.2f}GB (Peak: {max_memory:.2f}GB)")
+                gpu_count = torch.cuda.device_count()
+                if gpu_count > 1 and self.config.get('multi_gpu', False):
+                    print(f"🔧 Multi-GPU Memory Status:")
+                    for gpu_id in range(gpu_count):
+                        gpu_memory = torch.cuda.memory_allocated(gpu_id) / 1024**3
+                        max_memory = torch.cuda.max_memory_allocated(gpu_id) / 1024**3
+                        total_memory = torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3
+                        utilization = (gpu_memory / total_memory) * 100
+                        print(f"   GPU {gpu_id}: {gpu_memory:.2f}GB/{total_memory:.1f}GB ({utilization:.1f}%) Peak: {max_memory:.2f}GB")
+                else:
+                    gpu_memory = torch.cuda.memory_allocated() / 1024**3
+                    max_memory = torch.cuda.max_memory_allocated() / 1024**3
+                    print(f"🔧 GPU Memory: {gpu_memory:.2f}GB (Peak: {max_memory:.2f}GB)")
             
-            # Client training with device consistency
+            # Client training with device consistency and multi-GPU support
             client_updates = []
             global_state = self.server.get_global_model_state()
             
-            # Ensure global state tensors are on correct device
-            for key, tensor in global_state.items():
-                if isinstance(tensor, torch.Tensor):
-                    global_state[key] = tensor.to(self.device)
+            is_multi_gpu = self.config.get('multi_gpu', False)
             
-            for client in self.clients:
-                update = client.train(global_state, current_round=t)
+            if is_multi_gpu and hasattr(self, 'gpu_client_groups'):
+                # Multi-GPU parallel training
+                import concurrent.futures
+                import threading
                 
-                # Ensure client update tensors are on correct device
-                for key, tensor in update.items():
+                # Create global state copies for each GPU
+                gpu_global_states = {}
+                for gpu_id in self.gpu_client_groups.keys():
+                    gpu_device = f"cuda:{gpu_id}"
+                    gpu_global_state = {}
+                    for key, tensor in global_state.items():
+                        if isinstance(tensor, torch.Tensor):
+                            gpu_global_state[key] = tensor.to(gpu_device)
+                        else:
+                            gpu_global_state[key] = tensor
+                    gpu_global_states[gpu_id] = gpu_global_state
+                
+                def train_gpu_clients(gpu_id):
+                    """Train all clients assigned to a specific GPU"""
+                    gpu_updates = []
+                    gpu_global_state = gpu_global_states[gpu_id]
+                    gpu_device = f"cuda:{gpu_id}"
+                    
+                    for client_idx in self.gpu_client_groups[gpu_id]:
+                        client = self.clients[client_idx]
+                        update = client.train(gpu_global_state, current_round=t)
+                        
+                        # Move update to server device for aggregation
+                        server_update = {}
+                        for key, tensor in update.items():
+                            if isinstance(tensor, torch.Tensor):
+                                server_update[key] = tensor.to(self.device)
+                            else:
+                                server_update[key] = tensor
+                        gpu_updates.append(server_update)
+                    
+                    return gpu_updates
+                
+                # Execute parallel training across GPUs
+                with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.gpu_client_groups)) as executor:
+                    future_to_gpu = {executor.submit(train_gpu_clients, gpu_id): gpu_id 
+                                   for gpu_id in self.gpu_client_groups.keys()}
+                    
+                    for future in concurrent.futures.as_completed(future_to_gpu):
+                        gpu_id = future_to_gpu[future]
+                        try:
+                            gpu_updates = future.result()
+                            client_updates.extend(gpu_updates)
+                            print(f"✅ GPU {gpu_id} completed training {len(gpu_updates)} clients")
+                        except Exception as exc:
+                            print(f"❌ GPU {gpu_id} training failed: {exc}")
+                            raise exc
+                
+                print(f"🎮 Multi-GPU training completed: {len(client_updates)} total updates")
+            else:
+                # Single GPU training (original behavior)
+                # Ensure global state tensors are on correct device
+                for key, tensor in global_state.items():
                     if isinstance(tensor, torch.Tensor):
-                        update[key] = tensor.to(self.device)
+                        global_state[key] = tensor.to(self.device)
                 
-                client_updates.append(update)
+                for client in self.clients:
+                    update = client.train(global_state, current_round=t)
+                    
+                    # Ensure client update tensors are on correct device
+                    for key, tensor in update.items():
+                        if isinstance(tensor, torch.Tensor):
+                            update[key] = tensor.to(self.device)
+                    
+                    client_updates.append(update)
 
             # TARS Decision Making
             raw_trusts = [self.agent.calculate_raw_trust_score(up, global_state, self.server) for up in client_updates]

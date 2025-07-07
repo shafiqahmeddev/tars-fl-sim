@@ -88,8 +88,9 @@ class DeviceManager:
             return self._get_cpu_config(dataset)
     
     def _get_gpu_config(self, dataset: str) -> Dict[str, Any]:
-        """Get GPU-optimized configuration."""
+        """Get GPU-optimized configuration with multi-GPU support."""
         gpu_memory = self.device_info.get('gpu_memory_gb', 8)
+        gpu_count = self.device_info.get('gpu_count', 1)
         
         # Base configuration for GPU
         if dataset == 'mnist':
@@ -117,6 +118,19 @@ class DeviceManager:
         if gpu_memory >= 15:  # 16GB GPU
             config['batch_size'] = int(config['batch_size'] * 1.5)
             config['num_clients'] = min(30, config['num_clients'] + 10)
+        
+        # Multi-GPU optimizations
+        if gpu_count >= 2:
+            # Scale up for multi-GPU setup
+            config['num_clients'] = min(50, config['num_clients'] * 2)  # Double clients for 2 GPUs
+            config['batch_size'] = int(config['batch_size'] * 1.2)  # Slightly larger batches
+            config['multi_gpu'] = True
+            config['gpu_count'] = gpu_count
+            config['total_gpu_memory'] = self.device_info.get('total_gpu_memory_gb', gpu_memory * gpu_count)
+            print(f"🎮 Multi-GPU optimization: {gpu_count} GPUs, {config['num_clients']} clients")
+        else:
+            config['multi_gpu'] = False
+            config['gpu_count'] = 1
         
         return config
     
@@ -189,6 +203,11 @@ class DeviceManager:
             'amp_dtype': 'float16' if base_config['use_amp'] else 'float32',
             'grad_clip': 1.0,
             
+            # Multi-GPU settings
+            'multi_gpu': base_config.get('multi_gpu', False),
+            'gpu_count': base_config.get('gpu_count', 1),
+            'total_gpu_memory': base_config.get('total_gpu_memory', None),
+            
             # Data loading settings
             'num_workers': base_config['num_workers'],
             'pin_memory': base_config['pin_memory'],
@@ -258,11 +277,16 @@ class DeviceManager:
             gpu_count = self.device_info.get('gpu_count', 1)
             if gpu_count > 1:
                 print("  Multi-GPU environment detected")
-                print("  Using single GPU (cuda:0) for TARS training stability")
-                print("  Additional GPUs available for parallel experiments")
+                print("  Client distribution across multiple GPUs enabled")
+                print(f"  GPU 0: Primary device for server and coordination")
+                print(f"  GPU 1: Secondary device for parallel client training")
+                print(f"  Total VRAM: {self.device_info.get('total_gpu_memory_gb', 32):.1f}GB")
+                print("  Expected 2x training speed improvement")
+            else:
+                print("  Single GPU configuration")
             print("  Using GPU acceleration with mixed precision")
             print("  Optimized batch sizes and parallel processing")
-            print("  Expected 70-90% GPU utilization")
+            print("  Expected 70-90% GPU utilization per device")
         else:
             print("  Using CPU with conservative settings")
             print("  Disabled mixed precision for stability")
