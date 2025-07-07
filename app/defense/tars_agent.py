@@ -12,7 +12,12 @@ class TARSAgent(IAgent):
         self.num_actions = num_actions
         
         # Device management
-        self.device = config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+        configured_device = config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+        # Handle generic 'cuda' by converting to specific device
+        if configured_device == 'cuda' and torch.cuda.is_available():
+            self.device = 'cuda:0'
+        else:
+            self.device = configured_device
         
         # RL Hyperparameters
         self.learning_rate = config.get('learning_rate', 0.1)

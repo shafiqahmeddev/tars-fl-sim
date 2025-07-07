@@ -20,10 +20,20 @@ class Simulation:
         # Enhanced device management - use config device if specified
         config_device = config.get('device', 'auto')
         if config_device == 'auto':
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            if torch.cuda.is_available():
+                # Use specific GPU device for multi-GPU environments
+                gpu_count = torch.cuda.device_count()
+                if gpu_count > 1:
+                    print(f"🎮 Detected {gpu_count} GPUs - using cuda:0 for TARS simulation")
+                self.device = "cuda:0"
+            else:
+                self.device = "cpu"
         elif config_device == 'cuda' and not torch.cuda.is_available():
             print("Warning: CUDA requested but not available. Falling back to CPU.")
             self.device = "cpu"
+        elif config_device == 'cuda' and torch.cuda.is_available():
+            # Convert generic cuda to specific device
+            self.device = "cuda:0"
         else:
             self.device = config_device
             
@@ -395,11 +405,13 @@ class Simulation:
         for device, count in device_summary.items():
             print(f"  {device}: {count} tensors")
         
-        # Check for device mismatches
-        expected_device = self.device
+        # Check for device mismatches using device compatibility
+        expected_device = torch.device(self.device)
         mismatched_tensors = []
         for key, info in tensor_info.items():
-            if info['device'] != expected_device:
+            tensor_device = torch.device(info['device'])
+            # Check device compatibility rather than exact string match
+            if tensor_device != expected_device:
                 mismatched_tensors.append(f"{key} ({info['device']})")
         
         if mismatched_tensors:
@@ -412,7 +424,7 @@ class Simulation:
             print(f"✅ All tensors on correct device ({expected_device})")
         
         # Memory usage if CUDA
-        if torch.cuda.is_available() and expected_device == 'cuda':
+        if torch.cuda.is_available() and expected_device.type == 'cuda':
             memory_used = torch.cuda.memory_allocated() / 1024**3
             memory_cached = torch.cuda.memory_reserved() / 1024**3
             print(f"🎮 GPU Memory: {memory_used:.2f}GB used, {memory_cached:.2f}GB cached")

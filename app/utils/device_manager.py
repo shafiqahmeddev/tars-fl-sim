@@ -28,13 +28,20 @@ class DeviceManager:
             return 'cpu'
         elif self.force_device == 'cuda':
             if torch.cuda.is_available():
-                return 'cuda'
+                # Use specific GPU device for multi-GPU environments
+                return 'cuda:0'
             else:
                 print("Warning: CUDA forced but not available. Falling back to CPU.")
                 return 'cpu'
         else:
-            # Auto-detection
-            return 'cuda' if torch.cuda.is_available() else 'cpu'
+            # Auto-detection with specific GPU device
+            if torch.cuda.is_available():
+                gpu_count = torch.cuda.device_count()
+                if gpu_count > 1:
+                    print(f"🎮 Detected {gpu_count} GPUs - using cuda:0 for TARS training")
+                return 'cuda:0'
+            else:
+                return 'cpu'
     
     def _gather_device_info(self) -> Dict[str, Any]:
         """Gather comprehensive device information."""
@@ -46,12 +53,22 @@ class DeviceManager:
         }
         
         if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
             info.update({
+                'gpu_count': gpu_count,
                 'gpu_name': torch.cuda.get_device_name(0),
                 'gpu_memory_gb': torch.cuda.get_device_properties(0).total_memory / 1024**3,
                 'cuda_version': torch.version.cuda,
                 'cudnn_version': torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None
             })
+            
+            # Add info for additional GPUs if present
+            if gpu_count > 1:
+                info['total_gpu_memory_gb'] = sum(
+                    torch.cuda.get_device_properties(i).total_memory / 1024**3 
+                    for i in range(gpu_count)
+                )
+                info['all_gpu_names'] = [torch.cuda.get_device_name(i) for i in range(gpu_count)]
         
         return info
     
@@ -216,10 +233,18 @@ class DeviceManager:
         print(f"Selected Device: {self.selected_device}")
         print(f"Force Setting: {self.force_device or 'Auto-detect'}")
         
-        if self.selected_device == 'cuda':
+        if self.selected_device.startswith('cuda'):
             print(f"\n🎮 GPU INFORMATION:")
-            print(f"  GPU Name: {self.device_info['gpu_name']}")
-            print(f"  GPU Memory: {self.device_info['gpu_memory_gb']:.1f} GB")
+            gpu_count = self.device_info.get('gpu_count', 1)
+            if gpu_count > 1:
+                print(f"  GPU Count: {gpu_count} (Multi-GPU Setup)")
+                print(f"  All GPUs: {', '.join(self.device_info['all_gpu_names'])}")
+                print(f"  Total GPU Memory: {self.device_info['total_gpu_memory_gb']:.1f} GB")
+                print(f"  Using: {self.device_info['gpu_name']} (Primary)")
+                print(f"  Primary GPU Memory: {self.device_info['gpu_memory_gb']:.1f} GB")
+            else:
+                print(f"  GPU Name: {self.device_info['gpu_name']}")
+                print(f"  GPU Memory: {self.device_info['gpu_memory_gb']:.1f} GB")
             print(f"  CUDA Version: {self.device_info['cuda_version']}")
             if self.device_info['cudnn_version']:
                 print(f"  cuDNN Version: {self.device_info['cudnn_version']}")
@@ -229,7 +254,12 @@ class DeviceManager:
         print(f"  RAM: {self.device_info['ram_gb']:.1f} GB")
         
         print(f"\n🎯 OPTIMIZATION STRATEGY:")
-        if self.selected_device == 'cuda':
+        if self.selected_device.startswith('cuda'):
+            gpu_count = self.device_info.get('gpu_count', 1)
+            if gpu_count > 1:
+                print("  Multi-GPU environment detected")
+                print("  Using single GPU (cuda:0) for TARS training stability")
+                print("  Additional GPUs available for parallel experiments")
             print("  Using GPU acceleration with mixed precision")
             print("  Optimized batch sizes and parallel processing")
             print("  Expected 70-90% GPU utilization")

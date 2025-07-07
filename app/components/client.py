@@ -37,9 +37,14 @@ class Client(IClient):
         try:
             # Check if model is on correct device
             model_device = next(self.model.parameters()).device
-            if str(model_device) != self.device:
-                print(f"Warning: Model device ({model_device}) doesn't match expected device ({self.device})")
+            expected_device = torch.device(self.device)
+            
+            # Compare device objects instead of strings to handle cuda:0 vs cuda
+            if model_device != expected_device:
+                print(f"Info: Moving model from {model_device} to {expected_device}")
                 self.model = self.model.to(self.device)
+            else:
+                print(f"✅ Client {self.client_id} model correctly placed on {model_device}")
         except Exception as e:
             print(f"Device validation failed for client {self.client_id}: {e}")
 
