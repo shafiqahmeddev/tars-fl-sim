@@ -91,28 +91,78 @@ def median(updates: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
     return agg_update
 
 def fl_trust(updates: List[Dict[str, Any]], server_update: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-    """FLTrust aggregation rule."""
+    """FLTrust aggregation rule with enhanced device and dtype consistency."""
+    if not updates or not server_update:
+        return OrderedDict()
+    
     # Filter out non-tensor keys like '_client_stats'
     tensor_keys = [key for key in server_update.keys() if key != '_client_stats' and isinstance(server_update[key], torch.Tensor)]
     
-    server_vec = torch.cat([server_update[key].view(-1) for key in tensor_keys])
+    if not tensor_keys:
+        return OrderedDict()
+    
+    # Detect device from first tensor (prefer GPU if available)
+    reference_device = None
+    for key in tensor_keys:
+        if server_update[key].is_cuda:
+            reference_device = server_update[key].device
+            break
+    if reference_device is None:
+        reference_device = server_update[tensor_keys[0]].device
+    
+    # Convert server tensors to float32 on reference device for consistent computation
+    server_tensors = []
+    for key in tensor_keys:
+        tensor = server_update[key].to(device=reference_device, dtype=torch.float32)
+        server_tensors.append(tensor.view(-1))
+    
+    server_vec = torch.cat(server_tensors)
     server_norm = torch.norm(server_vec)
     
+    # Calculate trust scores with device consistency
     trust_scores = []
     for update in updates:
-        client_vec = torch.cat([update[key].view(-1) for key in tensor_keys])
+        # Convert client tensors to float32 on reference device
+        client_tensors = []
+        for key in tensor_keys:
+            tensor = update[key].to(device=reference_device, dtype=torch.float32)
+            client_tensors.append(tensor.view(-1))
+        
+        client_vec = torch.cat(client_tensors)
         # Cosine similarity as trust score
         score = torch.relu(torch.nn.functional.cosine_similarity(server_vec, client_vec, dim=0))
         trust_scores.append(score)
-        
-    trust_scores = torch.tensor(trust_scores)
+    
+    # Ensure trust scores are on reference device
+    trust_scores = torch.stack(trust_scores).to(device=reference_device)
     normalized_scores = trust_scores / (trust_scores.sum() + 1e-9)
     
+    # Perform weighted aggregation with device consistency
     agg_update = OrderedDict()
     for key in tensor_keys:
-        weighted_sum = torch.zeros_like(updates[0][key])
+        # Store original properties for final conversion
+        original_dtype = server_update[key].dtype
+        original_device = server_update[key].device
+        
+        # Initialize weighted_sum as float32 on reference device
+        weighted_sum = torch.zeros_like(
+            server_update[key], 
+            dtype=torch.float32, 
+            device=reference_device
+        )
+        
+        # Accumulate weighted updates
         for i, update in enumerate(updates):
-            weighted_sum += update[key] * normalized_scores[i]
-        agg_update[key] = weighted_sum
+            update_tensor = update[key].to(device=reference_device, dtype=torch.float32)
+            score = normalized_scores[i]
+            weighted_sum += update_tensor * score
+        
+        # Convert back to original dtype and device
+        if original_dtype in [torch.int64, torch.int32, torch.long]:
+            # Round for integer types
+            weighted_sum = weighted_sum.round()
+        
+        # Move to original device and convert to original dtype
+        agg_update[key] = weighted_sum.to(device=original_device, dtype=original_dtype)
         
     return agg_update
