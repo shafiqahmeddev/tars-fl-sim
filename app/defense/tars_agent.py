@@ -6,10 +6,13 @@ from typing import Dict, Any, List, Tuple, Callable
 from app.shared.interfaces import IAgent, IServer
 
 class TARSAgent(IAgent):
-    """Implements the Trust-Aware Reinforcement Selector agent."""
+    """Implements the Trust-Aware Reinforcement Selector agent with device consistency."""
     def __init__(self, actions: Dict[int, Callable], num_actions: int, config: dict):
         self.actions = actions
         self.num_actions = num_actions
+        
+        # Device management
+        self.device = config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
         
         # RL Hyperparameters
         self.learning_rate = config.get('learning_rate', 0.1)
@@ -23,11 +26,20 @@ class TARSAgent(IAgent):
         self.trust_params = config.get('trust_params', {'w_sim': 0.5, 'w_loss': 0.3, 'w_norm': 0.2, 'norm_threshold': 10.0})
         self.reward_weights = config.get('reward_weights', {'alpha1': 1.0, 'alpha2': 0.5, 'alpha3': 0.2})
 
-        self.q_table = defaultdict(lambda: np.zeros(self.num_actions))
-        self.trust_memory = defaultdict(lambda: 1.0)
+        # FIXED: Remove lambda functions to enable pickling
+        self.q_table = defaultdict(self._default_q_values)
+        self.trust_memory = defaultdict(self._default_trust_value)
+    
+    def _default_q_values(self):
+        """Default Q-value initializer (replaces lambda)."""
+        return np.zeros(self.num_actions)
+    
+    def _default_trust_value(self):
+        """Default trust value initializer (replaces lambda)."""
+        return 1.0
 
     def calculate_raw_trust_score(self, client_update_state: Dict[str, Any], global_model_state: Dict[str, Any], server: IServer) -> float:
-        """Enhanced trust score calculation with improved metrics."""
+        """Enhanced trust score calculation with improved metrics and device consistency."""
         # Extract client stats if available
         client_stats = client_update_state.get('_client_stats', {})
         
@@ -39,12 +51,33 @@ class TARSAgent(IAgent):
         _, global_loss = server.evaluate_model(global_model_state)
         loss_divergence = client_loss - global_loss
 
-        # Calculate parameter similarity
-        client_vec = torch.cat([p.view(-1) for p in clean_client_state.values()])
-        global_vec = torch.cat([p.view(-1) for p in global_model_state.values()])
+        # Calculate parameter similarity with device consistency
+        client_tensors = []
+        global_tensors = []
+        
+        for key in clean_client_state.keys():
+            if isinstance(clean_client_state[key], torch.Tensor) and isinstance(global_model_state[key], torch.Tensor):
+                # Ensure both tensors are on the same device
+                client_tensor = clean_client_state[key].to(device=self.device, dtype=torch.float32)
+                global_tensor = global_model_state[key].to(device=self.device, dtype=torch.float32)
+                
+                client_tensors.append(client_tensor.view(-1))
+                global_tensors.append(global_tensor.view(-1))
+        
+        if not client_tensors or not global_tensors:
+            # Fallback if no valid tensors found
+            return 0.5
+        
+        client_vec = torch.cat(client_tensors)
+        global_vec = torch.cat(global_tensors)
+        
+        # Ensure vectors are on same device
+        if client_vec.device != global_vec.device:
+            global_vec = global_vec.to(client_vec.device)
+        
         cosine_sim = F.cosine_similarity(client_vec, global_vec, dim=0).item()
 
-        # Calculate gradient/update magnitude
+        # Calculate gradient/update magnitude with device consistency
         grad_vec = client_vec - global_vec
         grad_norm = torch.norm(grad_vec).item()
         

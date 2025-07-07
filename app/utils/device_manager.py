@@ -157,11 +157,11 @@ class DeviceManager:
             'byzantine_pct': byzantine_pct,
             'attack_type': 'sign_flipping',
             'is_iid': False,
-            'num_rounds': 50 if dataset == 'mnist' else 60,
+            'num_rounds': 100 if dataset == 'mnist' else 120,  # Increased for better convergence
             'local_epochs': base_config['local_epochs'],
             
-            # Training parameters
-            'client_lr': 0.01,  # Conservative for stability
+            # Training parameters - optimized for convergence
+            'client_lr': 0.001,  # Lower learning rate for stability
             'client_optimizer': 'adam',
             'batch_size': base_config['batch_size'],
             'weight_decay': 1e-4,
@@ -181,26 +181,26 @@ class DeviceManager:
             'empty_cache_every': 5,
             'max_grad_norm': 1.0,
             
-            # Q-learning parameters
-            'learning_rate': 0.1,
-            'discount_factor': 0.9,
-            'epsilon_start': 1.0,
-            'epsilon_decay': 0.995,
-            'epsilon_min': 0.01,
+            # Q-learning parameters - tuned for better learning
+            'learning_rate': 0.05,  # Slower Q-learning for stability
+            'discount_factor': 0.95,  # Higher discount for long-term thinking
+            'epsilon_start': 0.9,  # Less exploration initially
+            'epsilon_decay': 0.99,  # Slower decay
+            'epsilon_min': 0.05,  # Higher minimum for continued exploration
             
-            # Trust mechanism parameters
-            'trust_beta': 0.5,
+            # Trust mechanism parameters - optimized
+            'trust_beta': 0.7,  # Higher smoothing for stability
             'trust_params': {
-                'w_sim': 0.4,
-                'w_loss': 0.4,
-                'w_norm': 0.2,
-                'norm_threshold': 5.0
+                'w_sim': 0.5,     # Increased similarity weight
+                'w_loss': 0.3,    # Reduced loss weight
+                'w_norm': 0.2,    # Keep norm weight
+                'norm_threshold': 10.0  # Increased threshold for tolerance
             },
             
-            # Training enhancements
+            # Training enhancements - optimized for convergence
             'use_scheduler': True,
             'early_stopping': True,
-            'patience': 15 if dataset == 'mnist' else 20,
+            'patience': 30 if dataset == 'mnist' else 40,  # Much higher patience
             'save_model': True,
             'use_pretrained': False,
             'force_retrain': True

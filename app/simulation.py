@@ -13,11 +13,24 @@ from app.shared.models import MNIST_CNN, CIFAR10_CNN
 from torch.utils.data import DataLoader, Subset, random_split
 
 class Simulation:
-    """Manages the entire Federated Learning simulation process."""
+    """Manages the entire Federated Learning simulation process with enhanced device management."""
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # Enhanced device management - use config device if specified
+        config_device = config.get('device', 'auto')
+        if config_device == 'auto':
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        elif config_device == 'cuda' and not torch.cuda.is_available():
+            print("Warning: CUDA requested but not available. Falling back to CPU.")
+            self.device = "cpu"
+        else:
+            self.device = config_device
+            
         print(f"Using device: {self.device}")
+        
+        # Ensure config has device information for components
+        self.config['device'] = self.device
         
         # Model persistence settings
         self.model_dir = "checkpoints"
@@ -59,8 +72,9 @@ class Simulation:
             prefetch_factor=prefetch_factor if num_workers > 0 else 2
         )
 
-        # Create model
+        # Create model and ensure device placement
         self.global_model = MNIST_CNN() if self.config['dataset'] == 'mnist' else CIFAR10_CNN()
+        self.global_model = self.global_model.to(self.device)
         
         # Create server
         self.server = Server(self.global_model, self.val_loader, self.device)
@@ -91,6 +105,7 @@ class Simulation:
                 prefetch_factor=prefetch_factor if num_workers > 0 else 2
             )
             client_model = MNIST_CNN() if self.config['dataset'] == 'mnist' else CIFAR10_CNN()
+            client_model = client_model.to(self.device)  # Ensure client model is on correct device
             self.clients.append(Client(i, client_model, client_loader, self.device, is_byzantine, attack, self.config))
 
         # Create TARS agent
@@ -215,11 +230,23 @@ class Simulation:
                 max_memory = torch.cuda.max_memory_allocated() / 1024**3
                 print(f"🔧 GPU Memory: {gpu_memory:.2f}GB (Peak: {max_memory:.2f}GB)")
             
-            # Client training
+            # Client training with device consistency
             client_updates = []
             global_state = self.server.get_global_model_state()
+            
+            # Ensure global state tensors are on correct device
+            for key, tensor in global_state.items():
+                if isinstance(tensor, torch.Tensor):
+                    global_state[key] = tensor.to(self.device)
+            
             for client in self.clients:
                 update = client.train(global_state, current_round=t)
+                
+                # Ensure client update tensors are on correct device
+                for key, tensor in update.items():
+                    if isinstance(tensor, torch.Tensor):
+                        update[key] = tensor.to(self.device)
+                
                 client_updates.append(update)
 
             # TARS Decision Making
@@ -240,11 +267,33 @@ class Simulation:
                 'server_update': self.server.get_global_model_state() # For FLTrust
             }
             new_global_state = chosen_rule(client_updates, **agg_params)
+            
+            # Ensure aggregated state tensors are on correct device
+            for key, tensor in new_global_state.items():
+                if isinstance(tensor, torch.Tensor):
+                    new_global_state[key] = tensor.to(self.device)
+            
             self.server.set_global_model_state(new_global_state)
 
             # Evaluation and Learning
             accuracy, loss = self.server.evaluate_model(new_global_state)
+            
+            # Enhanced logging with device and convergence monitoring
             print(f"Round {t+1} Accuracy: {accuracy:.2f}%, Loss: {loss:.4f}, Avg Trust: {avg_trust:.3f}")
+            
+            # Debug device consistency
+            if t % 10 == 0:  # Every 10 rounds
+                self._debug_device_consistency(new_global_state, t+1)
+            
+            # Monitor convergence
+            if t > 5:  # After first few rounds
+                recent_accuracies = [h['accuracy'] for h in self.history[-5:]]
+                if recent_accuracies:
+                    acc_trend = recent_accuracies[-1] - recent_accuracies[0] if len(recent_accuracies) > 1 else 0
+                    if abs(acc_trend) < 0.5:  # Very slow progress
+                        print(f"⚠️ Slow convergence detected (trend: {acc_trend:+.2f}%)")
+                        if accuracy < 30:  # Very low accuracy
+                            print(f"💡 Suggestion: Check device placement and learning rates")
             
             # Performance monitoring and early stopping
             if accuracy > self.best_accuracy:
@@ -314,3 +363,58 @@ class Simulation:
             self.save_trained_model(final_acc, final_loss, actual_rounds)
         
         return self.history
+
+    def _debug_device_consistency(self, model_state: Dict[str, Any], round_num: int):
+        """Debug device consistency and tensor information."""
+        print(f"\n🔍 Device Consistency Debug (Round {round_num})")
+        print("-" * 40)
+        
+        device_summary = {}
+        tensor_info = {}
+        
+        for key, tensor in model_state.items():
+            if isinstance(tensor, torch.Tensor):
+                device = str(tensor.device)
+                dtype = str(tensor.dtype)
+                shape = tuple(tensor.shape)
+                
+                if device not in device_summary:
+                    device_summary[device] = 0
+                device_summary[device] += 1
+                
+                tensor_info[key] = {
+                    'device': device,
+                    'dtype': dtype,
+                    'shape': shape,
+                    'requires_grad': tensor.requires_grad,
+                    'is_cuda': tensor.is_cuda
+                }
+        
+        # Print device summary
+        print(f"📊 Tensor Device Distribution:")
+        for device, count in device_summary.items():
+            print(f"  {device}: {count} tensors")
+        
+        # Check for device mismatches
+        expected_device = self.device
+        mismatched_tensors = []
+        for key, info in tensor_info.items():
+            if info['device'] != expected_device:
+                mismatched_tensors.append(f"{key} ({info['device']})")
+        
+        if mismatched_tensors:
+            print(f"⚠️  Device Mismatches (expected {expected_device}):")
+            for tensor_name in mismatched_tensors[:5]:  # Show first 5
+                print(f"  - {tensor_name}")
+            if len(mismatched_tensors) > 5:
+                print(f"  ... and {len(mismatched_tensors) - 5} more")
+        else:
+            print(f"✅ All tensors on correct device ({expected_device})")
+        
+        # Memory usage if CUDA
+        if torch.cuda.is_available() and expected_device == 'cuda':
+            memory_used = torch.cuda.memory_allocated() / 1024**3
+            memory_cached = torch.cuda.memory_reserved() / 1024**3
+            print(f"🎮 GPU Memory: {memory_used:.2f}GB used, {memory_cached:.2f}GB cached")
+        
+        print("-" * 40)
