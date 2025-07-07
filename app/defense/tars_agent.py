@@ -81,6 +81,11 @@ class TARSAgent(IAgent):
             global_vec = global_vec.to(client_vec.device)
         
         cosine_sim = F.cosine_similarity(client_vec, global_vec, dim=0).item()
+        
+        # Handle NaN from cosine similarity
+        import math
+        if math.isnan(cosine_sim):
+            cosine_sim = 0.0
 
         # Calculate gradient/update magnitude with device consistency
         grad_vec = client_vec - global_vec
@@ -89,6 +94,15 @@ class TARSAgent(IAgent):
         # Normalize gradient norm by model size for better scaling
         model_size = torch.norm(global_vec).item()
         normalized_grad_norm = grad_norm / (model_size + 1e-8)
+        
+        # Handle NaN from gradient calculations
+        if math.isnan(grad_norm) or math.isnan(model_size) or math.isnan(normalized_grad_norm):
+            normalized_grad_norm = 1.0  # Default to moderate penalty
+        
+        # Handle NaN from loss calculations
+        if math.isnan(client_loss) or math.isnan(global_loss) or math.isnan(loss_divergence):
+            loss_divergence = 0.0
+            global_loss = 1.0  # Safe default
 
         # Enhanced trust score calculation
         similarity_score = max(0, cosine_sim)  # Clamp to [0, 1]
@@ -112,22 +126,59 @@ class TARSAgent(IAgent):
             if client_training_loss > global_loss * 3:  # Unusually high training loss
                 score *= 0.8
         
-        # Ensure score is in [0, 1] range
+        # Ensure score is in [0, 1] range and handle any remaining NaN
+        if math.isnan(score):
+            score = 0.5  # Default neutral score
         normalized_score = max(0, min(1, score))
+        
+        # Final NaN check
+        if math.isnan(normalized_score):
+            normalized_score = 0.5
+            
         return normalized_score
 
     def update_and_get_smoothed_trust(self, client_id: int, raw_trust_score: float) -> float:
-        """Implements temporal trust smoothing."""
+        """Implements temporal trust smoothing with NaN handling."""
+        import math
+        
+        # Handle NaN input
+        if math.isnan(raw_trust_score):
+            raw_trust_score = 0.5  # Default neutral trust
+            
         prev_trust = self.trust_memory[client_id]
+        if math.isnan(prev_trust):
+            prev_trust = 1.0  # Default initial trust
+            
         smoothed_trust = self.beta * prev_trust + (1 - self.beta) * raw_trust_score
+        
+        # Handle NaN result
+        if math.isnan(smoothed_trust):
+            smoothed_trust = 0.5  # Fallback neutral trust
+            
         self.trust_memory[client_id] = smoothed_trust
         return smoothed_trust
 
     def get_state(self, prev_accuracy: float, prev_loss: float, avg_trust_score: float) -> tuple:
-        """Encodes continuous metrics into a discrete state for the Q-table."""
+        """Encodes continuous metrics into a discrete state for the Q-table with NaN handling."""
+        import math
+        
+        # Handle NaN values by replacing with safe defaults
+        if math.isnan(prev_accuracy) or prev_accuracy is None:
+            prev_accuracy = 0.0
+        if math.isnan(prev_loss) or prev_loss is None:
+            prev_loss = 2.0  # High loss default
+        if math.isnan(avg_trust_score) or avg_trust_score is None:
+            avg_trust_score = 0.5  # Neutral trust default
+        
+        # Clamp values to reasonable ranges
+        prev_accuracy = max(0.0, min(100.0, prev_accuracy))
+        prev_loss = max(0.0, min(10.0, prev_loss))  # Expand loss range
+        avg_trust_score = max(0.0, min(1.0, avg_trust_score))
+        
         acc_bin = int(prev_accuracy / 10)
         loss_bin = int(min(prev_loss, 2.0) * 5)
         trust_bin = int(avg_trust_score * 10)
+        
         return (acc_bin, loss_bin, trust_bin)
 
     def choose_action(self, state: tuple, current_round: int) -> int:
@@ -137,12 +188,32 @@ class TARSAgent(IAgent):
         return np.argmax(self.q_table[state])
 
     def calculate_reward(self, new_accuracy: float, new_loss: float, avg_smoothed_trust: float) -> float:
-        """Calculates the trust-regularized reward."""
+        """Calculates the trust-regularized reward with NaN handling."""
+        import math
+        
+        # Handle NaN values by replacing with safe defaults
+        if math.isnan(new_accuracy) or new_accuracy is None:
+            new_accuracy = 0.0
+        if math.isnan(new_loss) or new_loss is None:
+            new_loss = 2.0  # High loss default
+        if math.isnan(avg_smoothed_trust) or avg_smoothed_trust is None:
+            avg_smoothed_trust = 0.5  # Neutral trust default
+        
+        # Clamp values to reasonable ranges
+        new_accuracy = max(0.0, min(100.0, new_accuracy))
+        new_loss = max(0.0, min(10.0, new_loss))
+        avg_smoothed_trust = max(0.0, min(1.0, avg_smoothed_trust))
+        
         reward = (
             self.reward_weights['alpha1'] * new_accuracy -
             self.reward_weights['alpha2'] * new_loss +
             self.reward_weights['alpha3'] * avg_smoothed_trust
         )
+        
+        # Ensure reward is not NaN
+        if math.isnan(reward):
+            reward = 0.0
+        
         return reward
 
     def update_q_table(self, state: tuple, action: int, reward: float, next_state: tuple):
