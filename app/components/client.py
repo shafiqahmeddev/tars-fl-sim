@@ -92,10 +92,11 @@ class Client(IClient):
         else:
             optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         
-        # Learning rate scheduler
+        # Enhanced learning rate scheduler
         scheduler = None
         if self.config.get('use_scheduler', False):
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=local_epochs)
+            # Use StepLR for more stable convergence
+            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=max(1, local_epochs//2), gamma=0.5)
         
         # Enhanced mixed precision training setup with device validation
         use_amp = self.config.get('use_amp', False) and AMP_AVAILABLE and self.device == 'cuda'

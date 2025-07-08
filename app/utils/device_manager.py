@@ -92,12 +92,12 @@ class DeviceManager:
         gpu_memory = self.device_info.get('gpu_memory_gb', 8)
         gpu_count = self.device_info.get('gpu_count', 1)
         
-        # Base configuration for GPU
+        # Base configuration for GPU - optimized for stability
         if dataset == 'mnist':
             config = {
-                'batch_size': 256 if gpu_memory >= 8 else 128,
-                'num_clients': 20 if gpu_memory >= 8 else 15,
-                'local_epochs': 5,
+                'batch_size': 128 if gpu_memory >= 8 else 64,  # Smaller for stability
+                'num_clients': 15 if gpu_memory >= 8 else 10,  # Fewer clients for better convergence
+                'local_epochs': 3,  # Fewer epochs per round for stability
                 'num_workers': 4,  # Kaggle optimal
                 'use_amp': True,
                 'pin_memory': True,
@@ -105,25 +105,25 @@ class DeviceManager:
             }
         else:  # cifar10
             config = {
-                'batch_size': 128 if gpu_memory >= 8 else 64,
-                'num_clients': 20 if gpu_memory >= 8 else 15,
-                'local_epochs': 5,
+                'batch_size': 64 if gpu_memory >= 8 else 32,  # Much smaller for CIFAR-10 stability
+                'num_clients': 15 if gpu_memory >= 8 else 10,  # Fewer clients for better training
+                'local_epochs': 2,  # Very short epochs to prevent overfitting
                 'num_workers': 4,  # Kaggle optimal
                 'use_amp': True,
                 'pin_memory': True,
                 'prefetch_factor': 2
             }
         
-        # High-end GPU optimizations
+        # High-end GPU optimizations - conservative for stability
         if gpu_memory >= 15:  # 16GB GPU
-            config['batch_size'] = int(config['batch_size'] * 1.5)
-            config['num_clients'] = min(30, config['num_clients'] + 10)
+            config['batch_size'] = int(config['batch_size'] * 1.2)  # Modest increase
+            config['num_clients'] = min(20, config['num_clients'] + 5)  # Modest increase
         
-        # Multi-GPU optimizations
+        # Multi-GPU optimizations - conservative for better training
         if gpu_count >= 2:
-            # Scale up for multi-GPU setup
-            config['num_clients'] = min(50, config['num_clients'] * 2)  # Double clients for 2 GPUs
-            config['batch_size'] = int(config['batch_size'] * 1.2)  # Slightly larger batches
+            # Scale up for multi-GPU setup but keep reasonable numbers
+            config['num_clients'] = min(30, config['num_clients'] + 10)  # Modest increase for 2 GPUs
+            config['batch_size'] = config['batch_size']  # Keep batch size for stability
             config['multi_gpu'] = True
             config['gpu_count'] = gpu_count
             config['total_gpu_memory'] = self.device_info.get('total_gpu_memory_gb', gpu_memory * gpu_count)
@@ -188,11 +188,11 @@ class DeviceManager:
             'byzantine_pct': byzantine_pct,
             'attack_type': 'sign_flipping',
             'is_iid': False,
-            'num_rounds': 100 if dataset == 'mnist' else 120,  # Increased for better convergence
+            'num_rounds': 150 if dataset == 'mnist' else 200,  # More rounds for better convergence
             'local_epochs': base_config['local_epochs'],
             
             # Training parameters - optimized for convergence
-            'client_lr': 0.001,  # Lower learning rate for stability
+            'client_lr': 0.0001 if dataset == 'cifar10' else 0.001,  # Much lower for CIFAR-10
             'client_optimizer': 'adam',
             'batch_size': base_config['batch_size'],
             'weight_decay': 1e-4,
@@ -217,26 +217,26 @@ class DeviceManager:
             'empty_cache_every': 5,
             'max_grad_norm': 1.0,
             
-            # Q-learning parameters - tuned for better learning
-            'learning_rate': 0.05,  # Slower Q-learning for stability
-            'discount_factor': 0.95,  # Higher discount for long-term thinking
-            'epsilon_start': 0.9,  # Less exploration initially
-            'epsilon_decay': 0.99,  # Slower decay
-            'epsilon_min': 0.05,  # Higher minimum for continued exploration
+            # Q-learning parameters - optimized for better exploration and learning
+            'learning_rate': 0.1,  # Higher for faster learning
+            'discount_factor': 0.8,  # Lower for short-term focus
+            'epsilon_start': 0.95,  # More exploration initially
+            'epsilon_decay': 0.995,  # Much slower decay
+            'epsilon_min': 0.15,  # Higher minimum for continued exploration
             
-            # Trust mechanism parameters - optimized
-            'trust_beta': 0.7,  # Higher smoothing for stability
+            # Trust mechanism parameters - calibrated for better differentiation
+            'trust_beta': 0.3,  # Lower smoothing for more sensitivity
             'trust_params': {
-                'w_sim': 0.5,     # Increased similarity weight
-                'w_loss': 0.3,    # Reduced loss weight
-                'w_norm': 0.2,    # Keep norm weight
-                'norm_threshold': 10.0  # Increased threshold for tolerance
+                'w_sim': 0.3,     # Reduced similarity weight
+                'w_loss': 0.4,    # Increased loss weight for better discrimination
+                'w_norm': 0.3,    # Increased norm weight
+                'norm_threshold': 2.0  # Much lower threshold for stricter evaluation
             },
             
             # Training enhancements - optimized for convergence
             'use_scheduler': True,
             'early_stopping': True,
-            'patience': 30 if dataset == 'mnist' else 40,  # Much higher patience
+            'patience': 50 if dataset == 'mnist' else 60,  # Very high patience for convergence
             'save_model': True,
             'use_pretrained': False,
             'force_retrain': True

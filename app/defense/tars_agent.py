@@ -29,7 +29,7 @@ class TARSAgent(IAgent):
         # Trust mechanism parameters
         self.beta = config.get('trust_beta', 0.5) # For temporal smoothing
         self.trust_params = config.get('trust_params', {'w_sim': 0.5, 'w_loss': 0.3, 'w_norm': 0.2, 'norm_threshold': 10.0})
-        self.reward_weights = config.get('reward_weights', {'alpha1': 1.0, 'alpha2': 0.5, 'alpha3': 0.2})
+        self.reward_weights = config.get('reward_weights', {'alpha1': 2.0, 'alpha2': 1.0, 'alpha3': 0.5})  # Higher accuracy weight
 
         # FIXED: Remove lambda functions to enable pickling
         self.q_table = defaultdict(self._default_q_values)
@@ -188,7 +188,7 @@ class TARSAgent(IAgent):
         return np.argmax(self.q_table[state])
 
     def calculate_reward(self, new_accuracy: float, new_loss: float, avg_smoothed_trust: float) -> float:
-        """Calculates the trust-regularized reward with NaN handling."""
+        """Calculates the enhanced trust-regularized reward with NaN handling and better incentives."""
         import math
         
         # Handle NaN values by replacing with safe defaults
@@ -204,17 +204,34 @@ class TARSAgent(IAgent):
         new_loss = max(0.0, min(10.0, new_loss))
         avg_smoothed_trust = max(0.0, min(1.0, avg_smoothed_trust))
         
-        reward = (
-            self.reward_weights['alpha1'] * new_accuracy -
-            self.reward_weights['alpha2'] * new_loss +
+        # Enhanced reward calculation with accuracy bonuses
+        base_reward = (
+            self.reward_weights['alpha1'] * (new_accuracy / 100.0) -  # Normalize accuracy to [0,1]
+            self.reward_weights['alpha2'] * min(new_loss, 5.0) +      # Cap loss impact
             self.reward_weights['alpha3'] * avg_smoothed_trust
         )
         
-        # Ensure reward is not NaN
-        if math.isnan(reward):
-            reward = 0.0
+        # Add bonus for high accuracy to incentivize convergence
+        accuracy_bonus = 0.0
+        if new_accuracy >= 90.0:
+            accuracy_bonus = 5.0  # Large bonus for excellent accuracy
+        elif new_accuracy >= 80.0:
+            accuracy_bonus = 2.0  # Medium bonus for good accuracy
+        elif new_accuracy >= 70.0:
+            accuracy_bonus = 1.0  # Small bonus for decent accuracy
         
-        return reward
+        # Add penalty for very low accuracy
+        accuracy_penalty = 0.0
+        if new_accuracy < 20.0:
+            accuracy_penalty = -2.0  # Penalty for poor performance
+        
+        final_reward = base_reward + accuracy_bonus + accuracy_penalty
+        
+        # Ensure reward is not NaN
+        if math.isnan(final_reward):
+            final_reward = 0.0
+        
+        return final_reward
 
     def update_q_table(self, state: tuple, action: int, reward: float, next_state: tuple):
         """Updates the Q-table using the Bellman equation."""
